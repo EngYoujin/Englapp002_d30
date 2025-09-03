@@ -920,8 +920,8 @@
             const action = e.target.closest('[data-action]')?.dataset.action;
             const cid = cardWrapper.dataset.cid;
             if (action === 'speak') { e.stopPropagation(); speak(e.target.closest('[data-text]').dataset.text); return; }
-            if (action === 'mark-wrong') { markWrong(cid); renderSentenceFlashcards(container, unit, sentence); return; }
-            if (action === 'mark-correct') { markCorrect(cid); renderSentenceFlashcards(container, unit, sentence); return; }
+            if (action === 'mark-wrong') { markWrong(cid); route(); return; }
+            if (action === 'mark-correct') { markCorrect(cid); route(); return; }
             const flashcard = cardWrapper.querySelector('.flashcard');
             if (flashcard) flashcard.classList.toggle('flipped');
         });

@@ -192,490 +192,492 @@
 }</script>
 
     <script>
-/* ====== 永続化キー ====== */
-const KEY='duo3_progress_v1';
-const MODE_KEY='duo3_mode';
-const ORI_KEY='duo3_ori_unified';
-const HINT_CARDS='duo3_hint_cards_unified';
-const VOICE_MODE='duo3_voice_mode_unified';
+    // ====== アプリケーションの主要ロジック ======
+    // Copyright 2024, all rights reserved.
+    /* ====== 永続化キー ====== */
+    const KEY='duo3_progress_v1';
+    const MODE_KEY='duo3_mode';
+    const ORI_KEY='duo3_ori_unified';
+    const HINT_CARDS='duo3_hint_cards_unified';
+    const VOICE_MODE='duo3_voice_mode_unified';
 
-let reviewQueue = [];
-let reviewIndex = 0;
+    let reviewQueue = [];
+    let reviewIndex = 0;
 
-/* ====== ユーティリティ & SRS ====== */
-function getMode(){return localStorage.getItem(MODE_KEY)||'standard';}
-function setMode(v){localStorage.setItem(MODE_KEY,v);}
-function loadProgress(){try{return JSON.parse(localStorage.getItem(KEY))||{cards:{}}}catch(e){return{cards:{}}}}
-function saveProgress(p){localStorage.setItem(KEY,JSON.stringify(p));}
-function isDue(c){return !c||!c.next_due||Date.now()>=c.next_due;}
-function tomorrowPlusDays(n=0){const d=new Date();const t=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1);return t.getTime()+n*86400000;}
-function markWrong(id){const p=loadProgress();const c=p.cards[id]??={};c.last_result='wrong';c.interval=0;c.next_due=Date.now()-1;p.cards[id]=c;saveProgress(p);}
-function markCorrect(id){const p=loadProgress();const c=p.cards[id]??={};c.last_result='correct';const iv=c.interval||0;const next=iv===0?1:iv===1?3:Math.min(iv*2,30);c.interval=next;c.next_due=tomorrowPlusDays(next);c.done=true;p.cards[id]=c;saveProgress(p);}
-const DATA_JSON = JSON.parse(document.getElementById('unit-data').textContent);
-const DATA = { [DATA_JSON.unit]: DATA_JSON };
+    /* ====== ユーティリティ & SRS ====== */
+    function getMode(){return localStorage.getItem(MODE_KEY)||'standard';}
+    function setMode(v){localStorage.setItem(MODE_KEY,v);}
+    function loadProgress(){try{return JSON.parse(localStorage.getItem(KEY))||{cards:{}}}catch(e){return{cards:{}}}}
+    function saveProgress(p){localStorage.setItem(KEY,JSON.stringify(p));}
+    function isDue(c){return !c||!c.next_due||Date.now()>=c.next_due;}
+    function tomorrowPlusDays(n=0){const d=new Date();const t=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1);return t.getTime()+n*86400000;}
+    function markWrong(id){const p=loadProgress();const c=p.cards[id]??={};c.last_result='wrong';c.interval=0;c.next_due=Date.now()-1;p.cards[id]=c;saveProgress(p);}
+    function markCorrect(id){const p=loadProgress();const c=p.cards[id]??={};c.last_result='correct';const iv=c.interval||0;const next=iv===0?1:iv===1?3:Math.min(iv*2,30);c.interval=next;c.next_due=tomorrowPlusDays(next);c.done=true;p.cards[id]=c;saveProgress(p);}
+    const DATA_JSON = JSON.parse(document.getElementById('unit-data').textContent);
+    const DATA = { [DATA_JSON.unit]: DATA_JSON };
 
 
-/* ====== マスク（ヒント） ====== */
-function maskWordSegment(seg){if(seg.length<=1)return seg;return seg[0]+'•'.repeat(seg.length-1);}
-function maskToken(token){let out='',buf='';const flush=()=>{if(buf){out+=maskWordSegment(buf);buf='';}};for(const ch of token){if(/[A-Za-z0-9]/.test(ch)){buf+=ch}else{flush();out+=ch}}flush();return out;}
-function maskPhrase(s){return s.split(' ').map(maskToken).join(' ');}
+    /* ====== マスク（ヒント） ====== */
+    function maskWordSegment(seg){if(seg.length<=1)return seg;return seg[0]+'•'.repeat(seg.length-1);}
+    function maskToken(token){let out='',buf='';const flush=()=>{if(buf){out+=maskWordSegment(buf);buf='';}};for(const ch of token){if(/[A-Za-z0-9]/.test(ch)){buf+=ch}else{flush();out+=ch}}flush();return out;}
+    function maskPhrase(s){return s.split(' ').map(maskToken).join(' ');}
 
-/* ====== 向き・ヒント ====== */
-function getOri(){return localStorage.getItem(ORI_KEY)||'en2ja'}
-function setOri(v){localStorage.setItem(ORI_KEY,v)}
-function getHintPref(){ return (localStorage.getItem(HINT_CARDS) || 'on') === 'on'; }
-function setHintPref(on){ localStorage.setItem(HINT_CARDS, on ? 'on' : 'off'); }
+    /* ====== 向き・ヒント ====== */
+    function getOri(){return localStorage.getItem(ORI_KEY)||'en2ja'}
+    function setOri(v){localStorage.setItem(ORI_KEY,v)}
+    function getHintPref(){ return (localStorage.getItem(HINT_CARDS) || 'on') === 'on'; }
+    function setHintPref(on){ localStorage.setItem(HINT_CARDS, on ? 'on' : 'off'); }
 
-/* ====== TTS（音声合成） ====== */
-const PAUSE_MS = 1000;
-let speechSynthesis = window.speechSynthesis;
-let voiceCache = { male: null, female: null, auto: [], toggle: 0 };
+    /* ====== TTS（音声合成） ====== */
+    const PAUSE_MS = 1000;
+    let speechSynthesis = window.speechSynthesis;
+    let voiceCache = { male: null, female: null, auto: [], toggle: 0 };
 
-function pickVoices() {
-    try {
-        const vs = speechSynthesis.getVoices();
-        if (!vs.length) return;
-        const en = vs.filter(v => /^en([-_]|$)/i.test(v.lang) || /english/i.test(v.name));
-        voiceCache.female = en.find(v => /female|jenny|ariel|emma|olivia|zira|samantha|alloy|nova/i.test(v.name)) || null;
-        voiceCache.male = en.find(v => /male|david|guy|ryan|brian|matthew|daniel|andrew|roger/i.test(v.name)) || null;
-        const autoVoiceSet = new Set();
-        if (voiceCache.male) autoVoiceSet.add(voiceCache.male);
-        if (voiceCache.female) autoVoiceSet.add(voiceCache.female);
-        const usUkVoices = en.filter(v => v.lang.startsWith('en-US') || v.lang.startsWith('en-GB'));
-        usUkVoices.forEach(v => autoVoiceSet.add(v));
-        const otherVoices = en.filter(v => !v.lang.startsWith('en-US') && !v.lang.startsWith('en-GB'));
-        otherVoices.forEach(v => autoVoiceSet.add(v));
-        voiceCache.auto = Array.from(autoVoiceSet).sort(() => 0.5 - Math.random());
-        if (!voiceCache.male) voiceCache.male = voiceCache.auto[0] || en[0] || vs[0];
-        if (!voiceCache.female) voiceCache.female = voiceCache.auto[1] || voiceCache.auto[0] || en[0] || vs[0];
-    } catch (e) { console.error('Error picking voices', e); }
-}
-
-if('speechSynthesis' in window) {
-  speechSynthesis.onvoiceschanged = pickVoices;
-  pickVoices();
-}
-
-function sanitizeForTTS(s){
-    if (!s) return s;
-    let t = s.replace(/\([^)]*\)/g, '').replace(/（[^）]*）/g, '');
-    t = t.replace(/<[^>]+>/g, '');
-    t = t.replace(/[↔↮→—–…\/｜≠=]/g, ' [[PAUSE]] ');
-    t = t.replace(/(\s*\[\[PAUSE\]\]\s*){2,}/g, ' [[PAUSE]] ');
-    t = t.replace(/[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF]/g, '');
-    t = t.replace(/\s{2,}/g, ' ').trim();
-    return t;
-}
-
-function getVoiceMode(){return localStorage.getItem(VOICE_MODE)||'auto'}
-
-function speak(text){
-    if (!('speechSynthesis' in window) || !text) return;
-    try { speechSynthesis.cancel(); } catch (e) { }
-    const prepared = sanitizeForTTS(text);
-    const parts = prepared.split(/\s*\[\[PAUSE\]\]\s*/).map(s => s.trim()).filter(Boolean);
-    if (parts.length === 0) return;
-    const rate = parseFloat(document.getElementById('rate')?.value || '1');
-    const mode = getVoiceMode();
-    const pickVoiceForPart = () => {
-        let voiceToUse = null;
-        if (mode === 'male') { voiceToUse = voiceCache.male; }
-        else if (mode === 'female') { voiceToUse = voiceCache.female; }
-        else {
-            if (voiceCache.auto.length > 0) {
-                voiceCache.toggle = (voiceCache.toggle + 1) % voiceCache.auto.length;
-                voiceToUse = voiceCache.auto[voiceCache.toggle];
-            }
-        }
-        if (!voiceToUse) {
-            const allVoices = speechSynthesis.getVoices();
-            voiceToUse = allVoices.find(v => v.lang.startsWith('en')) || allVoices[0];
-        }
-        return voiceToUse;
-    };
-    let partIndex = 0;
-    const speakNextPart = () => {
-        if (partIndex >= parts.length) return;
-        const u = new SpeechSynthesisUtterance(parts[partIndex]);
-        u.lang = 'en-US';
-        u.rate = rate;
-        u.voice = pickVoiceForPart();
-        u.onend = () => {
-            partIndex++;
-            if (partIndex < parts.length) { setTimeout(speakNextPart, PAUSE_MS); }
-        };
-        if (speechSynthesis.getVoices().length === 0) { setTimeout(() => speechSynthesis.speak(u), 250); }
-        else { speechSynthesis.speak(u); }
-    };
-    speakNextPart();
-}
-
-/* ====== UI 同期 ====== */
-function syncAppSettings(){
-    const voiceSeg=document.getElementById('voiceSeg');
-    if(voiceSeg) [...voiceSeg.querySelectorAll('button')].forEach(b=>b.classList.toggle('on',b.dataset.v===getVoiceMode()));
-    
-    const modeSeg=document.getElementById('modeSeg');
-    if(modeSeg) [...modeSeg.querySelectorAll('button')].forEach(b=>b.classList.toggle('on',b.dataset.v===getMode()));
-
-    const oriSeg=document.getElementById('oriSeg');
-    if(oriSeg) [...oriSeg.querySelectorAll('button')].forEach(b=>b.classList.toggle('on',b.dataset.v===getOri()));
-
-    const hintSeg=document.getElementById('hintSeg');
-    if(hintSeg) {
-        const isHintDisabled = getOri() === 'en2ja';
-        hintSeg.style.opacity = isHintDisabled ? '0.5' : '1';
-        [...hintSeg.querySelectorAll('button')].forEach(b => {
-            b.classList.toggle('on', (b.dataset.v === 'on') === getHintPref());
-            b.disabled = isHintDisabled;
-        });
+    function pickVoices() {
+        try {
+            const vs = speechSynthesis.getVoices();
+            if (!vs.length) return;
+            const en = vs.filter(v => /^en([-_]|$)/i.test(v.lang) || /english/i.test(v.name));
+            voiceCache.female = en.find(v => /female|jenny|ariel|emma|olivia|zira|samantha|alloy|nova/i.test(v.name)) || null;
+            voiceCache.male = en.find(v => /male|david|guy|ryan|brian|matthew|daniel|andrew|roger/i.test(v.name)) || null;
+            const autoVoiceSet = new Set();
+            if (voiceCache.male) autoVoiceSet.add(voiceCache.male);
+            if (voiceCache.female) autoVoiceSet.add(voiceCache.female);
+            const usUkVoices = en.filter(v => v.lang.startsWith('en-US') || v.lang.startsWith('en-GB'));
+            usUkVoices.forEach(v => autoVoiceSet.add(v));
+            const otherVoices = en.filter(v => !v.lang.startsWith('en-US') && !v.lang.startsWith('en-GB'));
+            otherVoices.forEach(v => autoVoiceSet.add(v));
+            voiceCache.auto = Array.from(autoVoiceSet).sort(() => 0.5 - Math.random());
+            if (!voiceCache.male) voiceCache.male = voiceCache.auto[0] || en[0] || vs[0];
+            if (!voiceCache.female) voiceCache.female = voiceCache.auto[1] || voiceCache.auto[0] || en[0] || vs[0];
+        } catch (e) { console.error('Error picking voices', e); }
     }
-}
 
-/* ====== ルーティング & 画面描画 ====== */
-const app=document.getElementById('app');
-addEventListener('hashchange',route);
-addEventListener('DOMContentLoaded',route);
-
-function route(){
-  const h=location.hash||'#/';
-  if(h==='#/'||h==='#'){ renderHome(); }
-  else if (h === '#/final-check') { renderFinalCheck(); }
-  else if (h === '#/review') { renderReview(); }
-  else if(h.startsWith('#play=')){
-      const s=h.slice(6);
-      const[unit,qs]=s.split('?');
-      const params=new URLSearchParams(qs||'');
-      const i=parseInt(params.get('i')||'0',10)||0;
-      const step=params.get('step')||'quiz';
-      renderPlay(unit,i,step);
-  }
-  else { renderHome(); }
-}
-
-/* ====== ヘッダー ====== */
-document.getElementById('reset-data-btn').onclick=()=>{if(confirm('本当に学習データをすべてリセットしますか？')){localStorage.removeItem(KEY);alert('学習データを削除しました。');location.reload();}}
-document.getElementById('header-review-link').onclick = (e) => {
-    e.preventDefault();
-    location.hash = '#/review';
-}
-
-function getDueBreakdown(){
-  const p=loadProgress();let total=0,urgent=0,scheduled=0,mcq=0,voc=0;
-  for(const id in p.cards){
-      const c=p.cards[id];
-      if(isDue(c)){
-          total++;
-          if(c.last_result==='wrong') urgent++; else scheduled++;
-          if (id.endsWith('-mcq')) mcq++; else voc++;
-      }
-  }
-  return {total,urgent,scheduled,mcq,voc};
-}
-
-function renderHome(){
-  const unitId = DATA_JSON.unit;
-  const unitTitle = DATA_JSON.title;
-  document.getElementById('header-title').textContent = `DUO 3.0 Helper — ${unitTitle}`;
-  const unit=DATA[unitId];
-  
-  app.innerHTML=`
-    <div id="toc-screen">
-        <h1 class="text-3xl md:text-4xl font-bold text-gray-800 text-center mb-2">${unit.title}</h1>
-        <p class="text-gray-600 text-center mb-6">学習したい例文を選ぶか、最初から全ての問題に挑戦しましょう。</p>
-        <div id="review-banner-container" class="mb-6"></div>
-        <div class="flex justify-center items-center gap-x-6 gap-y-4 flex-wrap mb-6 text-sm text-gray-600 border bg-gray-50 p-4 rounded-lg">
-            <span class="flex items-center"><i class="fas fa-sliders-h mr-2 text-gray-500"></i><strong>音声・表示設定</strong></span>
-            <span>速度: <input id="rate" type="range" min="0.6" max="1.4" step="0.1" value="1" class="align-middle w-24"></span>
-            <span class="flex items-center">声:
-                <span class="segment ml-2" id="voiceSeg">
-                    <button data-v="auto" class="on">自動</button> <button data-v="male">男</button> <button data-v="female">女</button>
-                </span>
-            </span>
-            <span class="flex items-center">モード:
-                <span class="segment ml-2" id="modeSeg">
-                    <button data-v="standard" class="on">標準</button> <button data-v="lite">簡易</button>
-                </span>
-            </span>
-            <span class="flex items-center">カード向き:
-                <span class="segment ml-2" id="oriSeg">
-                    <button data-v="en2ja" class="on">英→日</button> <button data-v="ja2en">日→英</button>
-                </span>
-            </span>
-            <span class="flex items-center">ヒント(日→英):
-                <span class="segment ml-2" id="hintSeg">
-                    <button data-v="on" class="on">ON</button> <button data-v="off">OFF</button>
-                </span>
-            </span>
-        </div>
-
-        <!-- メイン学習カード -->
-        <div class="bg-orange-50 border-2 border-orange-100 p-8 rounded-3xl mb-8 shadow-lg">
-            <h2 class="text-3xl font-extrabold text-orange-900/80 text-center mb-6">メイン学習</h2>
-            
-            <button id="startAll" class="w-full bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold py-4 px-8 rounded-full text-xl transition-all transform hover:scale-105 shadow-md hover:shadow-lg mb-8">
-                最初から順番に全ての問題をやる
-            </button>
-            
-            <h3 class="text-xl font-bold text-gray-700 text-center mb-5">個別学習・復習</h3>
-            <div id="grid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-5"></div>
-        </div>
-
-        <!-- 腕試しカード -->
-        <div class="bg-white/60 backdrop-blur-sm border border-gray-200/80 p-8 rounded-3xl shadow-lg">
-             <h2 class="text-3xl font-extrabold text-gray-800 text-center mb-6">腕試し</h2>
-             <button id="final-check-btn" class="w-full bg-white hover:bg-gray-50 text-gray-800 font-bold py-3 px-6 border-2 border-gray-300 rounded-full transition-all transform hover:scale-105">
-                まとめて最終チェック
-            </button>
-        </div>
-    </div>`;
-
-  document.getElementById('startAll').onclick=()=>location.hash=`#play=${unitId}?i=0&step=quiz`;
-  document.getElementById('final-check-btn').onclick = () => location.hash = '#/final-check';
-  
-  const settingsChanged = (e, setter) => {
-    const v = e.target?.dataset?.v;
-    if (v) { setter(v); syncAppSettings(); }
-  };
-  
-  document.getElementById('voiceSeg').addEventListener('click', (e) => { const v = e.target?.dataset?.v; if(v) { localStorage.setItem(VOICE_MODE, v); syncAppSettings(); }});
-  document.getElementById('modeSeg').addEventListener('click', (e) => settingsChanged(e, setMode));
-  document.getElementById('oriSeg').addEventListener('click', (e) => settingsChanged(e, setOri));
-  document.getElementById('hintSeg').addEventListener('click', (e) => { const v = e.target?.dataset?.v; if(v) { setHintPref(v === 'on'); syncAppSettings(); }});
-
-  const breakdown = getDueBreakdown();
-  const reviewBannerContainer = document.getElementById('review-banner-container');
-  const headerReviewBadge = document.getElementById('header-review-badge');
-
-  if (breakdown.total > 0) {
-      reviewBannerContainer.innerHTML = `
-          <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded-lg cursor-pointer hover:bg-yellow-200" id="start-review-btn">
-              <p class="font-bold">今日の復習があります！</p>
-              <p>期限が来たカードが <span class="font-bold">${breakdown.total}</span> 件あります。（要復習: ${breakdown.urgent}件 / 再確認: ${breakdown.scheduled}件）</p>
-          </div>
-      `;
-      reviewBannerContainer.querySelector('#start-review-btn').addEventListener('click', () => location.hash = '#/review');
-      headerReviewBadge.textContent = breakdown.total;
-      headerReviewBadge.classList.remove('hidden');
-  } else {
-      reviewBannerContainer.innerHTML = '';
-      headerReviewBadge.classList.add('hidden');
-  }
-
-
-  const p=loadProgress();
-  const grid=document.getElementById('grid');
-  unit.sentences.forEach((s,i)=>{
-    const a=document.createElement('a');
-    a.href=`#play=${unitId}?i=${i}&step=quiz`;
-    a.className='bg-white p-4 border border-gray-200 rounded-xl shadow-md text-center font-bold text-gray-800 hover:bg-gray-50 hover:border-blue-500 hover:shadow-lg hover:-translate-y-1 transition-all relative flex flex-col justify-center items-center';
-    
-    const title = document.createElement('span');
-    title.textContent=`例文 ${s.number}`;
-    a.appendChild(title);
-
-    const cardMcq = p.cards[`${s.id}-mcq`];
-    const dueMcq = cardMcq && isDue(cardMcq);
-
-    const dueVoc = (s.headwords || []).some(hw => {
-        const cid = `${unit.unit}-${s.id.split('-')[1]}-${hw.en.toLowerCase().replaceAll(' ','_')}`;
-        const cardVoc = p.cards[cid];
-        return cardVoc && isDue(cardVoc);
-    });
-
-    if (dueMcq || dueVoc) {
-        const badgeContainer = document.createElement('div');
-        badgeContainer.className = 'absolute top-1 right-1 flex space-x-1';
-        if (dueMcq) {
-            const b = document.createElement('span');
-            b.className = 'text-xs bg-red-500 text-white rounded-full h-5 w-5 flex items-center justify-center font-bold';
-            b.textContent = 'Q';
-            badgeContainer.appendChild(b);
-        }
-        if (dueVoc) {
-            const b = document.createElement('span');
-            b.className = 'text-xs bg-sky-500 text-white rounded-full h-5 w-5 flex items-center justify-center font-bold';
-            b.textContent = 'V';
-            badgeContainer.appendChild(b);
-        }
-        a.appendChild(badgeContainer);
+    if('speechSynthesis' in window) {
+      speechSynthesis.onvoiceschanged = pickVoices;
+      pickVoices();
     }
-    grid.appendChild(a);
-  });
-  
-  syncAppSettings();
-}
 
-function renderFinalCheck() {
-    document.getElementById('header-title').textContent = 'まとめて最終チェック';
-    app.innerHTML = `
-        <div class="flex justify-between items-center mb-4">
-             <a href="#/" class="text-blue-500 hover:text-blue-700 font-semibold"><i class="fas fa-arrow-left mr-2"></i>目次に戻る</a>
-             <button id="shuffle-final-check-btn" class="text-blue-500 hover:text-blue-700 font-semibold"><i class="fas fa-random mr-2"></i>順番をシャッフル</button>
-        </div>
-        <h2 class="text-2xl font-bold text-gray-800 text-center mb-4">まとめて最終チェック</h2>
-        <p id="final-check-description" class="text-sm text-gray-500 text-center mb-6"></p>
-        <div id="final-check-flashcards" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
-    `;
-    document.getElementById('shuffle-final-check-btn').onclick = renderFinalCheck;
-    const allHeadwords = Object.values(DATA).flatMap(unit => unit.sentences.flatMap(s => s.headwords.map(hw => ({ ...hw, sentenceId: s.id, unitId: unit.unit })))).sort(() => Math.random() - 0.5);
-    renderGenericFlashcards(document.getElementById('final-check-flashcards'), allHeadwords);
-}
+    function sanitizeForTTS(s){
+        if (!s) return s;
+        let t = s.replace(/\([^)]*\)/g, '').replace(/（[^）]*）/g, '');
+        t = t.replace(/<[^>]+>/g, '');
+        t = t.replace(/[↔↮→—–…\/｜≠=]/g, ' [[PAUSE]] ');
+        t = t.replace(/(\s*\[\[PAUSE\]\]\s*){2,}/g, ' [[PAUSE]] ');
+        t = t.replace(/[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF]/g, '');
+        t = t.replace(/\s{2,}/g, ' ').trim();
+        return t;
+    }
 
-function getDueCards() {
-    const p = loadProgress();
-    const due = [];
-    for (const id in p.cards) {
-        if (isDue(p.cards[id])) {
-            const cardData = { id, progress: p.cards[id] };
-            const parts = id.split('-');
-            const unitId = parts[0];
-            const sentenceId = `${parts[0]}-${parts[1]}`;
-            
-            const unit = DATA[unitId];
-            if (!unit) continue;
+    function getVoiceMode(){return localStorage.getItem(VOICE_MODE)||'auto'}
 
-            const sentence = unit.sentences.find(s => s.id === sentenceId);
-            if (!sentence) continue;
-            
-            if (id.endsWith('-mcq')) {
-                cardData.type = 'mcq';
-                cardData.mcq = sentence.mcq;
-                cardData.ja = sentence.ja;
-            } else {
-                const enWord = parts.slice(2).join(' ').replaceAll('_', ' ');
-                const headword = sentence.headwords.find(hw => hw.en.toLowerCase().replace(/ /g, '_') === enWord.replace(/ /g, '_'));
-                if (headword) {
-                    cardData.type = 'voc';
-                    cardData.hw = headword;
+    function speak(text){
+        if (!('speechSynthesis' in window) || !text) return;
+        try { speechSynthesis.cancel(); } catch (e) { }
+        const prepared = sanitizeForTTS(text);
+        const parts = prepared.split(/\s*\[\[PAUSE\]\]\s*/).map(s => s.trim()).filter(Boolean);
+        if (parts.length === 0) return;
+        const rate = parseFloat(document.getElementById('rate')?.value || '1');
+        const mode = getVoiceMode();
+        const pickVoiceForPart = () => {
+            let voiceToUse = null;
+            if (mode === 'male') { voiceToUse = voiceCache.male; }
+            else if (mode === 'female') { voiceToUse = voiceCache.female; }
+            else {
+                if (voiceCache.auto.length > 0) {
+                    voiceCache.toggle = (voiceCache.toggle + 1) % voiceCache.auto.length;
+                    voiceToUse = voiceCache.auto[voiceCache.toggle];
                 }
             }
-
-            if(cardData.type){
-                due.push(cardData);
+            if (!voiceToUse) {
+                const allVoices = speechSynthesis.getVoices();
+                voiceToUse = allVoices.find(v => v.lang.startsWith('en')) || allVoices[0];
             }
+            return voiceToUse;
+        };
+        let partIndex = 0;
+        const speakNextPart = () => {
+            if (partIndex >= parts.length) return;
+            const u = new SpeechSynthesisUtterance(parts[partIndex]);
+            u.lang = 'en-US';
+            u.rate = rate;
+            u.voice = pickVoiceForPart();
+            u.onend = () => {
+                partIndex++;
+                if (partIndex < parts.length) { setTimeout(speakNextPart, PAUSE_MS); }
+            };
+            if (speechSynthesis.getVoices().length === 0) { setTimeout(() => speechSynthesis.speak(u), 250); }
+            else { speechSynthesis.speak(u); }
+        };
+        speakNextPart();
+    }
+
+    /* ====== UI 同期 ====== */
+    function syncAppSettings(){
+        const voiceSeg=document.getElementById('voiceSeg');
+        if(voiceSeg) [...voiceSeg.querySelectorAll('button')].forEach(b=>b.classList.toggle('on',b.dataset.v===getVoiceMode()));
+        
+        const modeSeg=document.getElementById('modeSeg');
+        if(modeSeg) [...modeSeg.querySelectorAll('button')].forEach(b=>b.classList.toggle('on',b.dataset.v===getMode()));
+
+        const oriSeg=document.getElementById('oriSeg');
+        if(oriSeg) [...oriSeg.querySelectorAll('button')].forEach(b=>b.classList.toggle('on',b.dataset.v===getOri()));
+
+        const hintSeg=document.getElementById('hintSeg');
+        if(hintSeg) {
+            const isHintDisabled = getOri() === 'en2ja';
+            hintSeg.style.opacity = isHintDisabled ? '0.5' : '1';
+            [...hintSeg.querySelectorAll('button')].forEach(b => {
+                b.classList.toggle('on', (b.dataset.v === 'on') === getHintPref());
+                b.disabled = isHintDisabled;
+            });
         }
     }
-    due.sort((a, b) => {
-        if (a.progress.last_result === 'wrong' && b.progress.last_result !== 'wrong') return -1;
-        if (a.progress.last_result !== 'wrong' && b.progress.last_result === 'wrong') return 1;
-        return (a.progress.next_due || 0) - (b.progress.next_due || 0);
-    });
-    return due;
-}
 
+    /* ====== ルーティング & 画面描画 ====== */
+    const app=document.getElementById('app');
+    addEventListener('hashchange',route);
+    addEventListener('DOMContentLoaded',route);
 
-function renderReview() {
-    document.getElementById('header-title').textContent = '今日の復習';
-    reviewQueue = getDueCards();
-    reviewIndex = 0;
-
-    app.innerHTML = `
-        <div class="flex justify-between items-center mb-4">
-             <a href="#/" class="text-blue-500 hover:text-blue-700 font-semibold"><i class="fas fa-arrow-left mr-2"></i>目次に戻る</a>
-             <div id="review-progress" class="text-gray-500 font-medium"></div>
-        </div>
-        <div id="review-card-container"></div>
-        <div id="review-complete" class="hidden text-center p-8">
-            <h2 class="text-2xl font-bold text-gray-800 mb-4">復習完了！</h2>
-            <p class="text-gray-600 mb-6">今日の復習はすべて終わりました。お疲れ様でした！</p>
-            <a href="#/" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-8 rounded-full">目次に戻る</a>
-        </div>
-    `;
-
-    if (reviewQueue.length > 0) {
-        renderNextReviewCard();
-    } else {
-        document.getElementById('review-card-container').innerHTML = `<p class="text-center text-gray-500 py-8">今日の復習項目はありません。</p>`;
-        document.getElementById('review-progress').textContent = '0 / 0';
+    function route(){
+      const h=location.hash||'#/';
+      if(h==='#/'||h==='#'){ renderHome(); }
+      else if (h === '#/final-check') { renderFinalCheck(); }
+      else if (h === '#/review') { renderReview(); }
+      else if(h.startsWith('#play=')){
+          const s=h.slice(6);
+          const[unit,qs]=s.split('?');
+          const params=new URLSearchParams(qs||'');
+          const i=parseInt(params.get('i')||'0',10)||0;
+          const step=params.get('step')||'quiz';
+          renderPlay(unit,i,step);
+      }
+      else { renderHome(); }
     }
-}
 
-function renderNextReviewCard() {
-    if (reviewIndex >= reviewQueue.length) {
-        document.getElementById('review-card-container').classList.add('hidden');
-        document.getElementById('review-complete').classList.remove('hidden');
-        document.getElementById('review-progress').textContent = `完了 (${reviewQueue.length}/${reviewQueue.length})`;
-        return;
+    /* ====== ヘッダー ====== */
+    document.getElementById('reset-data-btn').onclick=()=>{if(confirm('本当に学習データをすべてリセットしますか？')){localStorage.removeItem(KEY);alert('学習データを削除しました。');location.reload();}}
+    document.getElementById('header-review-link').onclick = (e) => {
+        e.preventDefault();
+        location.hash = '#/review';
     }
-    
-    document.getElementById('review-progress').textContent = `進捗: ${reviewIndex + 1} / ${reviewQueue.length}`;
-    
-    const cardData = reviewQueue[reviewIndex];
-    const container = document.getElementById('review-card-container');
-    container.innerHTML = ''; // Clear previous card
 
-    if (cardData.type === 'mcq') {
-        renderReviewMcqCard(container, cardData);
-    } else if (cardData.type === 'voc') {
-        renderReviewVocCard(container, cardData);
-    } else {
-        // Skip unknown card types
-        reviewIndex++;
-        renderNextReviewCard();
+    function getDueBreakdown(){
+      const p=loadProgress();let total=0,urgent=0,scheduled=0,mcq=0,voc=0;
+      for(const id in p.cards){
+          const c=p.cards[id];
+          if(isDue(c)){
+              total++;
+              if(c.last_result==='wrong') urgent++; else scheduled++;
+              if (id.endsWith('-mcq')) mcq++; else voc++;
+          }
+      }
+      return {total,urgent,scheduled,mcq,voc};
     }
-}
 
-function handleReviewAction(isCorrect) {
-    const cardData = reviewQueue[reviewIndex];
-    if (isCorrect) {
-        markCorrect(cardData.id);
-    } else {
-        markWrong(cardData.id);
-    }
-    reviewIndex++;
-    setTimeout(renderNextReviewCard, isCorrect ? 400 : 800);
-}
-
-function renderReviewMcqCard(container, cardData) {
-    const { mcq, ja } = cardData;
-    const shuffledChoices = [mcq.answer, ...mcq.distractors].sort(() => Math.random() - 0.5);
-    let optionsHTML = shuffledChoices.map(choice =>
-        `<button class="btn-option w-full p-4 bg-white border border-gray-300 rounded-lg text-left text-gray-700 font-medium transition-all duration-200 hover:border-blue-500 hover:shadow-md">${choice}</button>`
-    ).join('');
-
-    container.innerHTML = `
-        <div class="p-4 border rounded-lg shadow-sm">
-            <p class="text-sm text-gray-500 text-center mb-4">空所補充</p>
-            <div class="mb-6 relative">
-                <p class="text-xl md:text-2xl text-gray-800 text-center p-4 bg-gray-50 rounded-lg">${mcq.stem_en}</p>
-                <button class="absolute top-2 right-2 text-gray-500 hover:text-blue-500 text-lg" onclick="speak('${mcq.stem_en.replace('[____]', mcq.answer).replace(/'/g, "\\'")}')"><i class="fas fa-volume-up"></i></button>
+    function renderHome(){
+      const unitId = DATA_JSON.unit;
+      const unitTitle = DATA_JSON.title;
+      document.getElementById('header-title').textContent = `DUO 3.0 Helper — ${unitTitle}`;
+      const unit=DATA[unitId];
+      
+      app.innerHTML=`
+        <div id="toc-screen">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-800 text-center mb-2">${unit.title}</h1>
+            <p class="text-gray-600 text-center mb-6">学習したい例文を選ぶか、最初から全ての問題に挑戦しましょう。</p>
+            <div id="review-banner-container" class="mb-6"></div>
+            <div class="flex justify-center items-center gap-x-6 gap-y-4 flex-wrap mb-6 text-sm text-gray-600 border bg-gray-50 p-4 rounded-lg">
+                <span class="flex items-center"><i class="fas fa-sliders-h mr-2 text-gray-500"></i><strong>音声・表示設定</strong></span>
+                <span>速度: <input id="rate" type="range" min="0.6" max="1.4" step="0.1" value="1" class="align-middle w-24"></span>
+                <span class="flex items-center">声:
+                    <span class="segment ml-2" id="voiceSeg">
+                        <button data-v="auto" class="on">自動</button> <button data-v="male">男</button> <button data-v="female">女</button>
+                    </span>
+                </span>
+                <span class="flex items-center">モード:
+                    <span class="segment ml-2" id="modeSeg">
+                        <button data-v="standard" class="on">標準</button> <button data-v="lite">簡易</button>
+                    </span>
+                </span>
+                <span class="flex items-center">カード向き:
+                    <span class="segment ml-2" id="oriSeg">
+                        <button data-v="en2ja" class="on">英→日</button> <button data-v="ja2en">日→英</button>
+                    </span>
+                </span>
+                <span class="flex items-center">ヒント(日→英):
+                    <span class="segment ml-2" id="hintSeg">
+                        <button data-v="on" class="on">ON</button> <button data-v="off">OFF</button>
+                    </span>
+                </span>
             </div>
-            <div id="review-quiz-options" class="grid grid-cols-1 md:grid-cols-2 gap-4">${optionsHTML}</div>
-            <div id="review-quiz-feedback" class="p-4 rounded-lg text-center font-medium hidden my-4"></div>
-        </div>
-    `;
 
-    container.querySelector('#review-quiz-options').addEventListener('click', e => {
-        if (e.target.tagName !== 'BUTTON' || e.target.disabled) return;
+            <!-- メイン学習カード -->
+            <div class="bg-orange-50 border-2 border-orange-100 p-8 rounded-3xl mb-8 shadow-lg">
+                <h2 class="text-3xl font-extrabold text-orange-900/80 text-center mb-6">メイン学習</h2>
+                
+                <button id="startAll" class="w-full bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold py-4 px-8 rounded-full text-xl transition-all transform hover:scale-105 shadow-md hover:shadow-lg mb-8">
+                    最初から順番に全ての問題をやる
+                </button>
+                
+                <h3 class="text-xl font-bold text-gray-700 text-center mb-5">個別学習・復習</h3>
+                <div id="grid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-5"></div>
+            </div>
+
+            <!-- 腕試しカード -->
+            <div class="bg-white/60 backdrop-blur-sm border border-gray-200/80 p-8 rounded-3xl shadow-lg">
+                 <h2 class="text-3xl font-extrabold text-gray-800 text-center mb-6">腕試し</h2>
+                 <button id="final-check-btn" class="w-full bg-white hover:bg-gray-50 text-gray-800 font-bold py-3 px-6 border-2 border-gray-300 rounded-full transition-all transform hover:scale-105">
+                    まとめて最終チェック
+                </button>
+            </div>
+        </div>`;
+
+      document.getElementById('startAll').onclick=()=>location.hash=`#play=${unitId}?i=0&step=quiz`;
+      document.getElementById('final-check-btn').onclick = () => location.hash = '#/final-check';
+      
+      const settingsChanged = (e, setter) => {
+        const v = e.target?.dataset?.v;
+        if (v) { setter(v); syncAppSettings(); }
+      };
+      
+      document.getElementById('voiceSeg').addEventListener('click', (e) => { const v = e.target?.dataset?.v; if(v) { localStorage.setItem(VOICE_MODE, v); syncAppSettings(); }});
+      document.getElementById('modeSeg').addEventListener('click', (e) => settingsChanged(e, setMode));
+      document.getElementById('oriSeg').addEventListener('click', (e) => settingsChanged(e, setOri));
+      document.getElementById('hintSeg').addEventListener('click', (e) => { const v = e.target?.dataset?.v; if(v) { setHintPref(v === 'on'); syncAppSettings(); }});
+
+      const breakdown = getDueBreakdown();
+      const reviewBannerContainer = document.getElementById('review-banner-container');
+      const headerReviewBadge = document.getElementById('header-review-badge');
+
+      if (breakdown.total > 0) {
+          reviewBannerContainer.innerHTML = `
+              <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded-lg cursor-pointer hover:bg-yellow-200" id="start-review-btn">
+                  <p class="font-bold">今日の復習があります！</p>
+                  <p>期限が来たカードが <span class="font-bold">${breakdown.total}</span> 件あります。（要復習: ${breakdown.urgent}件 / 再確認: ${breakdown.scheduled}件）</p>
+              </div>
+          `;
+          reviewBannerContainer.querySelector('#start-review-btn').addEventListener('click', () => location.hash = '#/review');
+          headerReviewBadge.textContent = breakdown.total;
+          headerReviewBadge.classList.remove('hidden');
+      } else {
+          reviewBannerContainer.innerHTML = '';
+          headerReviewBadge.classList.add('hidden');
+      }
+
+
+      const p=loadProgress();
+      const grid=document.getElementById('grid');
+      unit.sentences.forEach((s,i)=>{
+        const a=document.createElement('a');
+        a.href=`#play=${unitId}?i=${i}&step=quiz`;
+        a.className='bg-white p-4 border border-gray-200 rounded-xl shadow-md text-center font-bold text-gray-800 hover:bg-gray-50 hover:border-blue-500 hover:shadow-lg hover:-translate-y-1 transition-all relative flex flex-col justify-center items-center';
         
-        const selectedButton = e.target;
-        const isCorrect = selectedButton.textContent === mcq.answer;
-        
-        container.querySelectorAll('#review-quiz-options button').forEach(button => {
-            button.disabled = true;
-            if (button.textContent === mcq.answer) button.classList.add('bg-green-200', 'border-green-500');
-            else if (button === selectedButton) button.classList.add('bg-red-200', 'border-red-500');
+        const title = document.createElement('span');
+        title.textContent=`例文 ${s.number}`;
+        a.appendChild(title);
+
+        const cardMcq = p.cards[`${s.id}-mcq`];
+        const dueMcq = cardMcq && isDue(cardMcq);
+
+        const dueVoc = (s.headwords || []).some(hw => {
+            const cid = `${unit.unit}-${s.id.split('-')[1]}-${hw.en.toLowerCase().replaceAll(' ','_')}`;
+            const cardVoc = p.cards[cid];
+            return cardVoc && isDue(cardVoc);
         });
+
+        if (dueMcq || dueVoc) {
+            const badgeContainer = document.createElement('div');
+            badgeContainer.className = 'absolute top-1 right-1 flex space-x-1';
+            if (dueMcq) {
+                const b = document.createElement('span');
+                b.className = 'text-xs bg-red-500 text-white rounded-full h-5 w-5 flex items-center justify-center font-bold';
+                b.textContent = 'Q';
+                badgeContainer.appendChild(b);
+            }
+            if (dueVoc) {
+                const b = document.createElement('span');
+                b.className = 'text-xs bg-sky-500 text-white rounded-full h-5 w-5 flex items-center justify-center font-bold';
+                b.textContent = 'V';
+                badgeContainer.appendChild(b);
+            }
+            a.appendChild(badgeContainer);
+        }
+        grid.appendChild(a);
+      });
+      
+      syncAppSettings();
+    }
+
+    function renderFinalCheck() {
+        document.getElementById('header-title').textContent = 'まとめて最終チェック';
+        app.innerHTML = `
+            <div class="flex justify-between items-center mb-4">
+                 <a href="#/" class="text-blue-500 hover:text-blue-700 font-semibold"><i class="fas fa-arrow-left mr-2"></i>目次に戻る</a>
+                 <button id="shuffle-final-check-btn" class="text-blue-500 hover:text-blue-700 font-semibold"><i class="fas fa-random mr-2"></i>順番をシャッフル</button>
+            </div>
+            <h2 class="text-2xl font-bold text-gray-800 text-center mb-4">まとめて最終チェック</h2>
+            <p id="final-check-description" class="text-sm text-gray-500 text-center mb-6"></p>
+            <div id="final-check-flashcards" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+        `;
+        document.getElementById('shuffle-final-check-btn').onclick = renderFinalCheck;
+        const allHeadwords = Object.values(DATA).flatMap(unit => unit.sentences.flatMap(s => s.headwords.map(hw => ({ ...hw, sentenceId: s.id, unitId: unit.unit })))).sort(() => Math.random() - 0.5);
+        renderGenericFlashcards(document.getElementById('final-check-flashcards'), allHeadwords);
+    }
+
+    function getDueCards() {
+        const p = loadProgress();
+        const due = [];
+        for (const id in p.cards) {
+            if (isDue(p.cards[id])) {
+                const cardData = { id, progress: p.cards[id] };
+                const parts = id.split('-');
+                const unitId = parts[0];
+                const sentenceId = `${parts[0]}-${parts[1]}`;
+                
+                const unit = DATA[unitId];
+                if (!unit) continue;
+
+                const sentence = unit.sentences.find(s => s.id === sentenceId);
+                if (!sentence) continue;
+                
+                if (id.endsWith('-mcq')) {
+                    cardData.type = 'mcq';
+                    cardData.mcq = sentence.mcq;
+                    cardData.ja = sentence.ja;
+                } else {
+                    const enWord = parts.slice(2).join(' ').replaceAll('_', ' ');
+                    const headword = sentence.headwords.find(hw => hw.en.toLowerCase().replace(/ /g, '_') === enWord.replace(/ /g, '_'));
+                    if (headword) {
+                        cardData.type = 'voc';
+                        cardData.hw = headword;
+                    }
+                }
+
+                if(cardData.type){
+                    due.push(cardData);
+                }
+            }
+        }
+        due.sort((a, b) => {
+            if (a.progress.last_result === 'wrong' && b.progress.last_result !== 'wrong') return -1;
+            if (a.progress.last_result !== 'wrong' && b.progress.last_result === 'wrong') return 1;
+            return (a.progress.next_due || 0) - (b.progress.next_due || 0);
+        });
+        return due;
+    }
+
+
+    function renderReview() {
+        document.getElementById('header-title').textContent = '今日の復習';
+        reviewQueue = getDueCards();
+        reviewIndex = 0;
+
+        app.innerHTML = `
+            <div class="flex justify-between items-center mb-4">
+                 <a href="#/" class="text-blue-500 hover:text-blue-700 font-semibold"><i class="fas fa-arrow-left mr-2"></i>目次に戻る</a>
+                 <div id="review-progress" class="text-gray-500 font-medium"></div>
+            </div>
+            <div id="review-card-container"></div>
+            <div id="review-complete" class="hidden text-center p-8">
+                <h2 class="text-2xl font-bold text-gray-800 mb-4">復習完了！</h2>
+                <p class="text-gray-600 mb-6">今日の復習はすべて終わりました。お疲れ様でした！</p>
+                <a href="#/" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-8 rounded-full">目次に戻る</a>
+            </div>
+        `;
+
+        if (reviewQueue.length > 0) {
+            renderNextReviewCard();
+        } else {
+            document.getElementById('review-card-container').innerHTML = `<p class="text-center text-gray-500 py-8">今日の復習項目はありません。</p>`;
+            document.getElementById('review-progress').textContent = '0 / 0';
+        }
+    }
+
+    function renderNextReviewCard() {
+        if (reviewIndex >= reviewQueue.length) {
+            document.getElementById('review-card-container').classList.add('hidden');
+            document.getElementById('review-complete').classList.remove('hidden');
+            document.getElementById('review-progress').textContent = `完了 (${reviewQueue.length}/${reviewQueue.length})`;
+            return;
+        }
         
-        const feedbackEl = container.querySelector('#review-quiz-feedback');
-        feedbackEl.innerHTML = isCorrect ? `<span class="font-bold text-green-700">正解！</span>` : `<span class="font-bold text-red-700">不正解。</span> 正解は <b>${mcq.answer}</b> です。`;
-        feedbackEl.innerHTML += `<p class="text-gray-600 mt-2">訳：${ja}</p>`;
-        feedbackEl.className = `p-4 rounded-lg text-center font-medium my-4 ${isCorrect ? 'bg-green-100' : 'bg-red-100'}`;
-        feedbackEl.classList.remove('hidden');
+        document.getElementById('review-progress').textContent = `進捗: ${reviewIndex + 1} / ${reviewQueue.length}`;
+        
+        const cardData = reviewQueue[reviewIndex];
+        const container = document.getElementById('review-card-container');
+        container.innerHTML = ''; // Clear previous card
 
-        handleReviewAction(isCorrect);
-    });
-}
+        if (cardData.type === 'mcq') {
+            renderReviewMcqCard(container, cardData);
+        } else if (cardData.type === 'voc') {
+            renderReviewVocCard(container, cardData);
+        } else {
+            // Skip unknown card types
+            reviewIndex++;
+            renderNextReviewCard();
+        }
+    }
 
-function renderReviewVocCard(container, cardData) {
-    const { hw, id } = cardData;
-    const ori = getOri();
-    const hintOn = getHintPref();
+    function handleReviewAction(isCorrect) {
+        const cardData = reviewQueue[reviewIndex];
+        if (isCorrect) {
+            markCorrect(cardData.id);
+        } else {
+            markWrong(cardData.id);
+        }
+        reviewIndex++;
+        setTimeout(renderNextReviewCard, isCorrect ? 400 : 800);
+    }
 
-    const frontMain = (ori === 'en2ja') ? hw.en : hw.ja;
-    const frontSub = (ori === 'en2ja') ? (hw.pos || '') : (hintOn ? `ヒント: ${maskPhrase(hw.en)}` : '');
-    const backMain = (ori === 'en2ja') ? hw.ja : `${hw.en}${hw.pos ? ` <small class="text-base text-gray-500">/ ${hw.pos}</small>` : ''}`;
+    function renderReviewMcqCard(container, cardData) {
+        const { mcq, ja } = cardData;
+        const shuffledChoices = [mcq.answer, ...mcq.distractors].sort(() => Math.random() - 0.5);
+        let optionsHTML = shuffledChoices.map(choice =>
+            `<button class="btn-option w-full p-4 bg-white border border-gray-300 rounded-lg text-left text-gray-700 font-medium transition-all duration-200 hover:border-blue-500 hover:shadow-md">${choice}</button>`
+        ).join('');
+
+        container.innerHTML = `
+            <div class="p-4 border rounded-lg shadow-sm">
+                <p class="text-sm text-gray-500 text-center mb-4">空所補充</p>
+                <div class="mb-6 relative">
+                    <p class="text-xl md:text-2xl text-gray-800 text-center p-4 bg-gray-50 rounded-lg">${mcq.stem_en}</p>
+                    <button class="absolute top-2 right-2 text-gray-500 hover:text-blue-500 text-lg" onclick="speak('${mcq.stem_en.replace('[____]', mcq.answer).replace(/'/g, "\\'")}')"><i class="fas fa-volume-up"></i></button>
+                </div>
+                <div id="review-quiz-options" class="grid grid-cols-1 md:grid-cols-2 gap-4">${optionsHTML}</div>
+                <div id="review-quiz-feedback" class="p-4 rounded-lg text-center font-medium hidden my-4"></div>
+            </div>
+        `;
+
+        container.querySelector('#review-quiz-options').addEventListener('click', e => {
+            if (e.target.tagName !== 'BUTTON' || e.target.disabled) return;
+            
+            const selectedButton = e.target;
+            const isCorrect = selectedButton.textContent === mcq.answer;
+            
+            container.querySelectorAll('#review-quiz-options button').forEach(button => {
+                button.disabled = true;
+                if (button.textContent === mcq.answer) button.classList.add('bg-green-200', 'border-green-500');
+                else if (button === selectedButton) button.classList.add('bg-red-200', 'border-red-500');
+            });
+            
+            const feedbackEl = container.querySelector('#review-quiz-feedback');
+            feedbackEl.innerHTML = isCorrect ? `<span class="font-bold text-green-700">正解！</span>` : `<span class="font-bold text-red-700">不正解。</span> 正解は <b>${mcq.answer}</b> です。`;
+            feedbackEl.innerHTML += `<p class="text-gray-600 mt-2">訳：${ja}</p>`;
+            feedbackEl.className = `p-4 rounded-lg text-center font-medium my-4 ${isCorrect ? 'bg-green-100' : 'bg-red-100'}`;
+            feedbackEl.classList.remove('hidden');
+
+            handleReviewAction(isCorrect);
+        });
+    }
+
+    function renderReviewVocCard(container, cardData) {
+        const { hw, id } = cardData;
+        const ori = getOri();
+        const hintOn = getHintPref();
+
+        const frontMain = (ori === 'en2ja') ? hw.en : hw.ja;
+        const frontSub = (ori === 'en2ja') ? (hw.pos || '') : (hintOn ? `ヒント: ${maskPhrase(hw.en)}` : '');
+        const backMain = (ori === 'en2ja') ? hw.ja : `${hw.en}${hw.pos ? ` <small class="text-base text-gray-500">/ ${hw.pos}</small>` : ''}`;
     
     container.innerHTML = `
         <div class="card-wrapper flex flex-col gap-2">
@@ -944,8 +946,8 @@ function renderSentenceFlashcards(container, unit, sentence) {
         const action = e.target.closest('[data-action]')?.dataset.action;
         const cid = cardWrapper.dataset.cid;
         if (action === 'speak') { e.stopPropagation(); speak(e.target.closest('[data-text]').dataset.text); return; }
-        if (action === 'mark-wrong') { markWrong(cid); renderSentenceFlashcards(container, unit, sentence); return; }
-        if (action === 'mark-correct') { markCorrect(cid); renderSentenceFlashcards(container, unit, sentence); return; }
+        if (action === 'mark-wrong') { markWrong(cid); route(); return; }
+        if (action === 'mark-correct') { markCorrect(cid); route(); return; }
         const flashcard = cardWrapper.querySelector('.flashcard');
         if (flashcard) flashcard.classList.toggle('flipped');
     });

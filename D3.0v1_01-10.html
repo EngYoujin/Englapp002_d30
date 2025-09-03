@@ -902,42 +902,16 @@
         quizNav.innerHTML = `<a href="#play=${unit.unit}?i=${idx}&step=cards" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-8 rounded-full transition-colors">単語カードへ</a>`;
         container.appendChild(quizNav);
     }
-    function renderCards(container, unit, sentence, idx) {
-        let topChipsHTML = `
-            <div class="toprow flex items-center justify-center gap-4 mb-6 text-sm">
-                <span class="chip flex items-center p-2 border rounded-full bg-gray-50">
-                    向き: <b class="mx-1">${getOri() === 'en2ja' ? '英→日' : '日→英'}</b>
-                    <button class="text-blue-500 ml-1 font-semibold" data-action="toggle-ori">変更</button>
-                </span>`;
-        if (getOri() === 'ja2en') {
-            topChipsHTML += `
-                <span class="chip flex items-center p-2 border rounded-full bg-gray-50">
-                    ヒント: <b class="mx-1">${getHintPref() ? 'ON' : 'OFF'}</b>
-                    <button class="text-blue-500 ml-1 font-semibold" data-action="toggle-hint">切替</button>
-                </span>`;
-        }
-        topChipsHTML += '</div>';
-        container.innerHTML = topChipsHTML + '<div id="cards-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>';
-        renderSentenceFlashcards(container.querySelector('#cards-container'), unit, sentence);
-        container.addEventListener('click', e => {
-            const action = e.target.dataset.action;
-            if (action === 'toggle-ori') { setOri(getOri() === 'en2ja' ? 'ja2en' : 'en2ja'); route(); }
-            if (action === 'toggle-hint') { setHintPref(!getHintPref()); route(); }
-        });
-        const navDiv = document.createElement('div');
-        navDiv.className = 'text-center mt-6';
-        const nextSentenceIdx = idx + 1;
-        const navLink = (nextSentenceIdx < unit.sentences.length) ? `#play=${unit.unit}?i=${nextSentenceIdx}&step=quiz` : '#/';
-        const navText = (nextSentenceIdx < unit.sentences.length) ? '次の例文へ' : '目次に戻る';
-        navDiv.innerHTML = `<a href="${navLink}" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-8 rounded-full transition-colors">${navText}</a>`;
-        container.appendChild(navDiv);
-    }
-    function renderSentenceFlashcards(container, unit, sentence) {
+    
+    // START: Bug Fix 2.0
+    // Helper function to render only the flashcard HTML. This allows for quick updates without reattaching listeners.
+    // バッジ表示の不具合を修正するため、カード部分のみを描画するヘルパー関数を導入。
+    function _renderFlashcardHTML(cardsContainer, unit, sentence) {
         const { headwords } = sentence;
         const ori = getOri();
         const hintOn = getHintPref();
-        const progress = loadProgress();
-        container.innerHTML = headwords.map(hw => {
+        const progress = loadProgress(); // Always get fresh data
+        cardsContainer.innerHTML = headwords.map(hw => {
             const cid = `${unit.unit}-${sentence.id.split('-')[1]}-${hw.en.toLowerCase().replaceAll(' ','_')}`;
             const p = progress.cards[cid];
             let statusBadgeHTML = '';
@@ -969,18 +943,75 @@
                     </div>
                 </div>`;
         }).join('');
-        container.addEventListener('click', e => {
-            const cardWrapper = e.target.closest('.card-wrapper');
-            if (!cardWrapper) return;
-            const action = e.target.closest('[data-action]')?.dataset.action;
-            const cid = cardWrapper.dataset.cid;
-            if (action === 'speak') { e.stopPropagation(); speak(e.target.closest('[data-text]').dataset.text); return; }
-            if (action === 'mark-wrong') { markWrong(cid); renderSentenceFlashcards(container, unit, sentence); return; }
-            if (action === 'mark-correct') { markCorrect(cid); renderSentenceFlashcards(container, unit, sentence); return; }
-            const flashcard = cardWrapper.querySelector('.flashcard');
-            if (flashcard) flashcard.classList.toggle('flipped');
-        });
     }
+
+    // Corrected renderCards function that uses the helper for stable updates.
+    // 最初のクリックは効くが2枚目以降が反応しない不具合と、バッジが更新されない不具合の両方を修正。
+    function renderCards(container, unit, sentence, idx) {
+        // Part 1: HTML Structure Setup
+        let topChipsHTML = `
+            <div class="toprow flex items-center justify-center gap-4 mb-6 text-sm">
+                <span class="chip flex items-center p-2 border rounded-full bg-gray-50">
+                    向き: <b class="mx-1">${getOri() === 'en2ja' ? '英→日' : '日→英'}</b>
+                    <button class="text-blue-500 ml-1 font-semibold" data-action="toggle-ori">変更</button>
+                </span>`;
+        if (getOri() === 'ja2en') {
+            topChipsHTML += `
+                <span class="chip flex items-center p-2 border rounded-full bg-gray-50">
+                    ヒント: <b class="mx-1">${getHintPref() ? 'ON' : 'OFF'}</b>
+                    <button class="text-blue-500 ml-1 font-semibold" data-action="toggle-hint">切替</button>
+                </span>`;
+        }
+        topChipsHTML += '</div>';
+        container.innerHTML = topChipsHTML + '<div id="cards-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>';
+        
+        // Part 2: Initial Render
+        const cardsContainer = container.querySelector('#cards-container');
+        _renderFlashcardHTML(cardsContainer, unit, sentence);
+
+        // Part 3: A single, stable Event Listener
+        container.addEventListener('click', e => {
+            const target = e.target;
+            const action = target.closest('[data-action]')?.dataset.action;
+
+            if (action === 'toggle-ori') { setOri(getOri() === 'en2ja' ? 'ja2en' : 'en2ja'); route(); return; }
+            if (action === 'toggle-hint') { setHintPref(!getHintPref()); route(); return; }
+            
+            const cardWrapper = target.closest('.card-wrapper');
+            if (!cardWrapper) return;
+            const cid = cardWrapper.dataset.cid;
+
+            if (action === 'speak') {
+                e.stopPropagation();
+                speak(target.closest('[data-text]').dataset.text);
+                return;
+            }
+            if (action === 'mark-wrong') {
+                markWrong(cid);
+                _renderFlashcardHTML(cardsContainer, unit, sentence); // Re-render just the cards
+                return;
+            }
+            if (action === 'mark-correct') {
+                markCorrect(cid);
+                _renderFlashcardHTML(cardsContainer, unit, sentence); // Re-render just the cards
+                return;
+            }
+            const flashcard = cardWrapper.querySelector('.flashcard');
+            if (flashcard) {
+                flashcard.classList.toggle('flipped');
+            }
+        });
+        
+        // Part 4: Navigation
+        const navDiv = document.createElement('div');
+        navDiv.className = 'text-center mt-6';
+        const nextSentenceIdx = idx + 1;
+        const navLink = (nextSentenceIdx < unit.sentences.length) ? `#play=${unit.unit}?i=${nextSentenceIdx}&step=quiz` : '#/';
+        const navText = (nextSentenceIdx < unit.sentences.length) ? '次の例文へ' : '目次に戻る';
+        navDiv.innerHTML = `<a href="${navLink}" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-8 rounded-full transition-colors">${navText}</a>`;
+        container.appendChild(navDiv);
+    }
+    // END: Bug Fix 2.0
 
     /* ====== 汎用テンプレート本体 ====== */
     (function() {
@@ -993,3 +1024,4 @@
     </script>
 </body>
 </html>
+
